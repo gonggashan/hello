@@ -1,6 +1,8 @@
 import psutil
 import json
 import time
+import socket
+import requests
 from fastapi import FastAPI, HTTPException
 
 # 创建 FastAPI 实例
@@ -54,11 +56,32 @@ def get_top_memory_processes():
         print("无法访问进程信息，请确保脚本以管理员权限运行。")
         return []
 
+# 获取主机名
+def get_hostname():
+    return {"主机名": socket.gethostname()}
+
+# 获取内网IP地址
+def get_intranet_ip():
+    return {"内网IP": socket.gethostbyname(socket.gethostname())}
+
+# 获取公网IP地址
+def get_public_ip():
+    try:
+        response = requests.get('https://api.ipify.org?format=json')
+        public_ip = response.json()['ip']
+        return {"公网IP": public_ip}
+    except Exception as e:
+        print("获取公网IP失败:", e)
+        return {"公网IP": "获取失败"}
+
 # 路由，实时返回系统资源使用情况的 HTML 页面
 @app.get("/")
 def read_root():
     results = {
         "时间": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+        **get_hostname(),
+        **get_intranet_ip(),
+        **get_public_ip(),
         **get_cpu_usage(),
         **get_memory_usage(),
         **get_disk_usage(),
