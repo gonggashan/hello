@@ -4,6 +4,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 import time
+from threading import Thread
 
 # 创建 FastAPI 实例
 app = FastAPI()
@@ -19,6 +20,9 @@ prev_thread_count = 0
 prev_sleeping_process_count = 0
 prev_processes = []
 
+# 自动刷新间隔（默认3秒）
+auto_refresh_interval = 3
+
 # 获取CPU使用率
 def get_cpu_usage():
     global prev_cpu_usage
@@ -26,7 +30,7 @@ def get_cpu_usage():
     arrow = '🔺' if cpu_usage > prev_cpu_usage else '👇'
     color = 'red' if cpu_usage > prev_cpu_usage else 'green'
     prev_cpu_usage = cpu_usage
-    return cpu_usage, arrow, color
+    return f"{cpu_usage}% {arrow}", color
 
 # 获取内存使用率
 def get_memory_usage():
@@ -36,7 +40,7 @@ def get_memory_usage():
     arrow = '🔺' if memory_usage > prev_memory_usage else '👇'
     color = 'red' if memory_usage > prev_memory_usage else 'green'
     prev_memory_usage = memory_usage
-    return memory_usage, arrow, color
+    return f"{memory_usage:.2f}GB {arrow}", color
 
 # 获取磁盘使用率
 def get_disk_usage():
@@ -46,7 +50,7 @@ def get_disk_usage():
     arrow = '🔺' if disk_usage > prev_disk_usage else '👇'
     color = 'red' if disk_usage > prev_disk_usage else 'green'
     prev_disk_usage = disk_usage
-    return disk_usage, arrow, color
+    return f"{disk_usage:.2f}GB {arrow}", color
 
 # 获取磁盘IO
 def get_disk_io():
@@ -60,7 +64,7 @@ def get_disk_io():
     write_color = 'red' if disk_write > prev_disk_write else 'green'
     prev_disk_read = disk_read
     prev_disk_write = disk_write
-    return disk_read, read_arrow, read_color, disk_write, write_arrow, write_color
+    return f"{disk_read:.2f}MB {read_arrow}", read_color, f"{disk_write:.2f}MB {write_arrow}", write_color
 
 # 获取进程数量
 def get_process_count():
@@ -69,7 +73,7 @@ def get_process_count():
     arrow = '🔺' if process_count > prev_process_count else '👇'
     color = 'red' if process_count > prev_process_count else 'green'
     prev_process_count = process_count
-    return process_count, arrow, color
+    return f"{process_count} {arrow}", color
 
 # 获取线程数量
 def get_thread_count():
@@ -78,7 +82,7 @@ def get_thread_count():
     arrow = '🔺' if thread_count > prev_thread_count else '👇'
     color = 'red' if thread_count > prev_thread_count else 'green'
     prev_thread_count = thread_count
-    return thread_count, arrow, color
+    return f"{thread_count} {arrow}", color
 
 # 获取沉睡进程数量
 def get_sleeping_process_count():
@@ -87,7 +91,7 @@ def get_sleeping_process_count():
     arrow = '🔺' if sleeping_process_count > prev_sleeping_process_count else '👇'
     color = 'red' if sleeping_process_count > prev_sleeping_process_count else 'green'
     prev_sleeping_process_count = sleeping_process_count
-    return sleeping_process_count, arrow, color
+    return f"{sleeping_process_count} {arrow}", color
 
 # 获取主机名
 def get_hostname():
@@ -114,7 +118,7 @@ def get_public_ip():
         return "获取失败"
 
 # 获取系统全部进程信息
-def get_all_processes():
+def get_all_processes(sort_key=None, reverse=False):
     global prev_processes
     processes = []
     for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'create_time']):
@@ -131,6 +135,14 @@ def get_all_processes():
             processes.append(process_info)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
+
+    # 检查指定的排序键是否存在于进程信息中
+    if sort_key and sort_key in processes[0]:
+        processes.sort(key=lambda x: x[sort_key], reverse=reverse)
+    else:
+        # 如果指定的键不存在，则默认使用 'cpu_percent' 进行排序
+        processes.sort(key=lambda x: x['cpu_percent'], reverse=reverse)
+
     arrow_processes = []
     for process in processes:
         prev_process = next((p for p in prev_processes if p['pid'] == process['pid']), None)
@@ -150,18 +162,20 @@ def get_all_processes():
 
 # 生成页面
 @app.get("/html")
-def generate_html():
+def generate_html(sort_key: str = None, reverse: bool = False, refresh_interval: int = 3):
+    global auto_refresh_interval
+    auto_refresh_interval = refresh_interval
     hostname = get_hostname()
     intranet_ips = get_intranet_ips()
     public_ip = get_public_ip()
-    cpu_usage, cpu_arrow, cpu_color = get_cpu_usage()
-    memory_usage, memory_arrow, memory_color = get_memory_usage()
-    disk_usage, disk_arrow, disk_color = get_disk_usage()
-    disk_read, read_arrow, read_color, disk_write, write_arrow, write_color = get_disk_io()
-    process_count, process_arrow, process_color = get_process_count()
-    thread_count, thread_arrow, thread_color = get_thread_count()
-    sleeping_process_count, sleeping_arrow, sleeping_color = get_sleeping_process_count()
-    all_processes = get_all_processes()
+    cpu_usage, cpu_color = get_cpu_usage()
+    memory_usage, memory_color = get_memory_usage()
+    disk_usage, disk_color = get_disk_usage()
+    disk_read, read_color, disk_write, write_color = get_disk_io()
+    process_count, process_color = get_process_count()
+    thread_count, thread_color = get_thread_count()
+    sleeping_process_count, sleeping_color = get_sleeping_process_count()
+    all_processes = get_all_processes(sort_key, reverse)
 
     style_css = """
         body {
@@ -197,6 +211,25 @@ def generate_html():
         .green {
             color: green;
         }
+        .refresh {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            display: flex;
+            align-items: center;
+            color: green;
+        }
+        .refresh input[type='number'], .refresh button {
+            background-color: #333;
+            color: #0f0;
+            border: 1px solid #0f0;
+            padding: 5px;
+            border-radius: 3px;
+            margin-right: 5px;
+        }
+        .refresh label {
+            margin-right: 10px;
+        }
     """
 
     html_content = f"""
@@ -211,7 +244,14 @@ def generate_html():
         </style>
     </head>
     <body>
-        <h4>系统监控</h4>
+        <div class="refresh">
+            <form action="/html" method="get">
+                <label for="refresh_interval">系统监控自动刷新间隔（秒）：</label>
+                <input type="number" id="refresh_interval" name="refresh_interval" min="1" value="{auto_refresh_interval}">
+                <button type="submit">更新</button>
+            </form>
+        </div>
+        <h4></h4>
         <table>
             <tr>
                 <th>主机名</th>
@@ -227,43 +267,30 @@ def generate_html():
         <table>
             <tr>
                 <th>数据</th>
-                <th>值</th>
-                <th>变化</th>
             </tr>
             <tr>
-                <td>CPU使用率</td>
-                <td class="dataCell {cpu_color}">{cpu_usage}%</td>
-                <td class="{cpu_color}">{cpu_arrow}</td>
+                <td>CPU使用率: <span class="{cpu_color}">{cpu_usage}</span></td>
             </tr>
             <tr>
-                <td>内存使用率</td>
-                <td class="dataCell {memory_color}">{memory_usage:.2f}GB</td>
-                <td class="{memory_color}">{memory_arrow}</td>
+                <td>内存使用率: <span class="{memory_color}">{memory_usage}</span></td>
             </tr>
             <tr>
-                <td>磁盘使用率</td>
-                <td class="dataCell {disk_color}">{disk_usage:.2f}GB</td>
-                <td class="{disk_color}">{disk_arrow}</td>
+                <td>磁盘使用率: <span class="{disk_color}">{disk_usage}</span></td>
             </tr>
             <tr>
-                <td>磁盘IO (读取/写入)</td>
-                <td class="dataCell {read_color}">{disk_read:.2f}MB / {disk_write:.2f}MB</td>
-                <td class="{read_color}">{read_arrow} / {write_arrow}</td>
+                <td>磁盘IO (读取): <span class="{read_color}">{disk_read}</span></td>
             </tr>
             <tr>
-                <td>进程数量</td>
-                <td class="dataCell {process_color}">{process_count}</td>
-                <td class="{process_color}">{process_arrow}</td>
+                <td>磁盘IO (写入): <span class="{write_color}">{disk_write}</span></td>
             </tr>
             <tr>
-                <td>线程数量</td>
-                <td class="dataCell {thread_color}">{thread_count}</td>
-                <td class="{thread_color}">{thread_arrow}</td>
+                <td>进程数量: <span class="{process_color}">{process_count}</span></td>
             </tr>
             <tr>
-                <td>沉睡进程数量</td>
-                <td class="dataCell {sleeping_color}">{sleeping_process_count}</td>
-                <td class="{sleeping_color}">{sleeping_arrow}</td>
+                <td>线程数量: <span class="{thread_color}">{thread_count}</span></td>
+            </tr>
+            <tr>
+                <td>沉睡进程数量: <span class="{sleeping_color}">{sleeping_process_count}</span></td>
             </tr>
         </table>
         <h4>系统全部进程信息</h4>
@@ -271,9 +298,16 @@ def generate_html():
             <tr>
                 <th>PID</th>
                 <th>名称</th>
-                <th>CPU%</th>
-                <th>内存%</th>
-                <th>变化</th>
+                <th>
+                    CPU% 
+                    <a href="?sort_key=cpu_percent&reverse=False">&#9660;</a>
+                    <a href="?sort_key=cpu_percent&reverse=True">&#9650;</a>
+                </th>
+                <th>
+                    内存% 
+                    <a href="?sort_key=memory_percent&reverse=False">&#9660;</a>
+                    <a href="?sort_key=memory_percent&reverse=True">&#9650;</a>
+                </th>
             </tr>
     """
 
@@ -282,9 +316,8 @@ def generate_html():
             <tr>
                 <td>{process['pid']}</td>
                 <td>{process['name']}</td>
-                <td class="{process['cpu_color']}">{process['cpu_percent']}</td>
-                <td class="{process['memory_color']}">{process['memory_percent']}</td>
-                <td class="{process['cpu_color']}">{process['cpu_arrow']}</td>
+                <td class="{process['cpu_color']}">{process['cpu_percent']} {process['cpu_arrow']}</td>
+                <td class="{process['memory_color']}">{process['memory_percent']} {process['memory_arrow']}</td>
             </tr>
         """
 
@@ -295,6 +328,18 @@ def generate_html():
     """
 
     return HTMLResponse(content=html_content, status_code=200)
+
+# 自动刷新页面数据的线程函数
+def auto_refresh_data():
+    global auto_refresh_interval
+    while True:
+        time.sleep(auto_refresh_interval)
+        requests.get("http://localhost:8001/html")
+
+# 启动自动刷新页面数据的线程
+refresh_thread = Thread(target=auto_refresh_data)
+refresh_thread.daemon = True
+refresh_thread.start()
 
 # 启动 FastAPI 应用程序
 if __name__ == "__main__":
